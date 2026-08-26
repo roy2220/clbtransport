@@ -3,7 +3,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/roy2220/clbtransport.svg)](https://pkg.go.dev/github.com/roy2220/clbtransport)
 [![Coverage](./.badges/coverage.svg)](#)
 
-A drop-in wrapper around Go's `http.Transport` that adds client-side load balancing.
+A drop-in Go `http.Transport` wrapper that prevents connection pinning.
 
 ## The problem
 
