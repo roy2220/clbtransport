@@ -185,7 +185,7 @@ func TestNewTransport(t *testing.T) {
 
 			Clock: clock.NewMock(),
 			RandFactory: func() *rand.Rand {
-				return rand.New(&mockSource{Float64: func() float64 { return 0.2 }})
+				return rand.New(&mockSource{Float64: func() float64 { return 0.5 }})
 			},
 			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
 				return &mockRoundTripper{
@@ -206,11 +206,12 @@ func TestNewTransport(t *testing.T) {
 		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxIdleConns)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxIdleConns)
 		assert.Equal(t, int(math.Ceil(float64(http.DefaultMaxIdleConnsPerHost)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxIdleConnsPerHost)
 		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxConnsPerHost)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxConnsPerHost)
+		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
 
 		assert.Equal(t, TransportStats{
 			Subs: []*SubTransportStats{
 				{
-					MaxAge:   "23m40.8s",
+					MaxAge:   "16m0s",
 					RefCount: 1,
 				},
 				nil,
@@ -220,6 +221,39 @@ func TestNewTransport(t *testing.T) {
 			},
 			NextSubIndex: 1,
 		}, transport.Stats())
+	}
+
+	{
+		var underlyingTransport *http.Transport
+
+		transportConfig := TransportConfig{
+			ApproximateMaxConnAge:       16 * time.Minute,
+			ApproximateMaxConnAgeJitter: 0.8,
+			HotConnsPerHost:             5,
+
+			IdleConnTimeout: time.Hour,
+
+			Clock: clock.NewMock(),
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 { return 0.5 }})
+			},
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						underlyingTransport = transport
+						return &http.Response{Body: http.NoBody}, nil
+					},
+				}
+			},
+		}
+
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.NotNil(t, underlyingTransport)
+
+		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
 	}
 }
 

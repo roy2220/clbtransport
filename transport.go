@@ -224,7 +224,7 @@ func (t *Transport) pickSub() *subTransport {
 func (t *Transport) addSubLocked(i int) *subTransport {
 	maxSubAge := t.calculateMaxSubAgeLocked()
 	sub := &subTransport{
-		RoundTripper: t.newRoundTripper(),
+		RoundTripper: t.newRoundTripper(maxSubAge),
 		MaxAge:       maxSubAge,
 	}
 	t.subs[i] = sub
@@ -233,7 +233,11 @@ func (t *Transport) addSubLocked(i int) *subTransport {
 	return sub
 }
 
-func (t *Transport) newRoundTripper() http.RoundTripper {
+func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
+	idleConnTimeout := t.config.IdleConnTimeout
+	if !(idleConnTimeout >= 1 && idleConnTimeout <= maxSubAge) {
+		idleConnTimeout = maxSubAge
+	}
 	return t.config.RoundTripperFactory(&http.Transport{
 		Proxy:                  t.config.Proxy,
 		OnProxyConnectResponse: t.config.OnProxyConnectResponse,
@@ -248,7 +252,7 @@ func (t *Transport) newRoundTripper() http.RoundTripper {
 		MaxIdleConns:           t.maxIdleConns,
 		MaxIdleConnsPerHost:    t.maxIdleConnsPerHost,
 		MaxConnsPerHost:        t.maxConnsPerHost,
-		IdleConnTimeout:        t.config.IdleConnTimeout,
+		IdleConnTimeout:        idleConnTimeout,
 		ResponseHeaderTimeout:  t.config.ResponseHeaderTimeout,
 		ExpectContinueTimeout:  t.config.ExpectContinueTimeout,
 		TLSNextProto:           t.config.TLSNextProto,
