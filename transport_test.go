@@ -1,8 +1,11 @@
 package clbtransport_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
+	"io"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -49,6 +52,33 @@ func (s *mockSource) Uint64() uint64 {
 	return uint64(float64(1<<53) * s.Float64())
 }
 
+type mockBody struct {
+	ReadFunc  func(p []byte) (n int, err error)
+	CloseFunc func() error
+}
+
+var _ io.ReadCloser = (*mockBody)(nil)
+
+func (b *mockBody) Read(p []byte) (n int, err error) {
+	if f := b.ReadFunc; f != nil {
+		return f(p)
+	}
+	return 0, io.EOF
+}
+
+func (b *mockBody) Close() error {
+	if f := b.CloseFunc; f != nil {
+		return f()
+	}
+	return nil
+}
+
+type nopCloser struct{}
+
+var _ io.Closer = nopCloser{}
+
+func (nopCloser) Close() error { return nil }
+
 func TestNewTransport(t *testing.T) {
 	{
 		var underlyingTransport *http.Transport
@@ -90,14 +120,16 @@ func TestNewTransport(t *testing.T) {
 				return &mockRoundTripper{
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 						underlyingTransport = transport
-						return &http.Response{}, nil
+						return &http.Response{Body: http.NoBody}, nil
 					},
 				}
 			},
 		}
 
 		transport := NewTransport(transportConfig)
-		transport.RoundTrip(&http.Request{})
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
 		require.NotNil(t, underlyingTransport)
 
 		assert.NotNil(t, underlyingTransport.Proxy)
@@ -159,14 +191,16 @@ func TestNewTransport(t *testing.T) {
 				return &mockRoundTripper{
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 						underlyingTransport = transport
-						return &http.Response{}, nil
+						return &http.Response{Body: http.NoBody}, nil
 					},
 				}
 			},
 		}
 
 		transport := NewTransport(transportConfig)
-		transport.RoundTrip(&http.Request{})
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
 		require.NotNil(t, underlyingTransport)
 
 		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxIdleConns)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxIdleConns)
@@ -232,7 +266,7 @@ func TestTransport_RoundTrip(t *testing.T) {
 				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 					inChs[i] <- struct{}{}
 					<-outChs[i]
-					return &http.Response{Proto: "HTTP/test"}, nil
+					return &http.Response{Body: http.NoBody, Proto: "HTTP/test"}, nil
 				},
 			}
 		},
@@ -271,6 +305,7 @@ func TestTransport_RoundTrip(t *testing.T) {
 		wg.Go(func() {
 			resp, err := transport.RoundTrip(&http.Request{})
 			require.NoError(t, err)
+			resp.Body.Close()
 			assert.Equal(t, "HTTP/test", resp.Proto)
 		})
 	}
@@ -293,6 +328,256 @@ func TestTransport_RoundTrip(t *testing.T) {
 		},
 		NextSubIndex: 1,
 	}, transport.Stats())
+}
+
+func TestTransport_RoundTrip_Response_Body(t *testing.T) {
+	{
+		closeCnt := 0
+		transportConfig := TransportConfig{
+			HotConnsPerHost: 1,
+			MaxConnsPerHost: 1,
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 { return 0.8 }})
+			},
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{
+							Body: &mockBody{
+								CloseFunc: func() error {
+									closeCnt++
+									return errors.New("test error")
+								},
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				{
+					MaxAge:   "7m0s",
+					RefCount: 2,
+				},
+			},
+			NextSubIndex: 0,
+		}, transport.Stats())
+
+		for i := range 3 {
+			err := resp.Body.Close()
+			assert.EqualError(t, err, "test error")
+			assert.Equal(t, i+1, closeCnt)
+		}
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				{
+					MaxAge:   "7m0s",
+					RefCount: 1,
+				},
+			},
+			NextSubIndex: 0,
+		}, transport.Stats())
+	}
+
+	{
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{
+							Body: &mockBody{
+								ReadFunc: func(p []byte) (n int, err error) {
+									return copy(p, "12345"), errors.New("test error")
+								},
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		buf := make([]byte, 5)
+		n, err := resp.Body.Read(buf)
+		assert.EqualError(t, err, "test error")
+		assert.Equal(t, 5, n)
+
+		_, ok := resp.Body.(io.Writer)
+		assert.False(t, ok)
+
+		resp.Body.Close()
+	}
+
+	{
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						data := bytes.NewReader([]byte("12345"))
+						return &http.Response{
+							Body: &mockBody{
+								ReadFunc: func(p []byte) (n int, err error) {
+									return data.Read(p)
+								},
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		buf := bytes.NewBuffer(nil)
+		n, err := resp.Body.(io.WriterTo).WriteTo(buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), n)
+		assert.Equal(t, "12345", buf.String())
+
+		_, ok := resp.Body.(io.Writer)
+		assert.False(t, ok)
+
+		resp.Body.Close()
+	}
+
+	{
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						data := bytes.NewReader([]byte("12345"))
+						return &http.Response{
+							Body: &struct {
+								mockBody
+								io.WriterTo
+							}{
+								mockBody: mockBody{},
+								WriterTo: data,
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		buf := bytes.NewBuffer(nil)
+		n, err := resp.Body.(io.WriterTo).WriteTo(buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), n)
+		assert.Equal(t, "12345", buf.String())
+
+		_, ok := resp.Body.(io.Writer)
+		assert.False(t, ok)
+
+		resp.Body.Close()
+	}
+
+	{
+		buf := bytes.NewBuffer(nil)
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{
+							Body: &struct {
+								mockBody
+								io.Writer
+							}{
+								mockBody: mockBody{},
+								Writer:   buf,
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		n, err := resp.Body.(io.Writer).Write([]byte("12345"))
+		require.NoError(t, err)
+		assert.Equal(t, 5, n)
+		assert.Equal(t, "12345", buf.String())
+
+		resp.Body.Close()
+	}
+
+	{
+		buf := bytes.NewBuffer(nil)
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{
+							Body: &struct {
+								mockBody
+								io.Writer
+							}{
+								mockBody: mockBody{},
+								Writer:   buf,
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		n, err := resp.Body.(io.ReaderFrom).ReadFrom(bytes.NewReader([]byte("12345")))
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), n)
+		assert.Equal(t, "12345", buf.String())
+
+		resp.Body.Close()
+	}
+
+	{
+		buf := bytes.NewBuffer(nil)
+		transportConfig := TransportConfig{
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{
+							Body: &struct {
+								mockBody
+								io.Writer
+								io.ReaderFrom
+							}{
+								mockBody:   mockBody{},
+								Writer:     bytes.NewBuffer(nil),
+								ReaderFrom: buf,
+							},
+						}, nil
+					},
+				}
+			},
+		}
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		n, err := resp.Body.(io.ReaderFrom).ReadFrom(bytes.NewReader([]byte("12345")))
+		require.NoError(t, err)
+		assert.Equal(t, int64(5), n)
+		assert.Equal(t, "12345", buf.String())
+
+		resp.Body.Close()
+	}
 }
 
 func TestTransport_EvictSub(t *testing.T) {
@@ -339,7 +624,7 @@ func TestTransport_EvictSub(t *testing.T) {
 				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 					inChs[i] <- struct{}{}
 					<-outChs[i]
-					return &http.Response{Proto: "HTTP/test"}, nil
+					return &http.Response{Body: http.NoBody, Proto: "HTTP/test"}, nil
 				},
 				CloseIdleConnectionsFunc: func() {
 					closeIdleConnectionsCnt.Add(1)
@@ -405,6 +690,7 @@ func TestTransport_EvictSub(t *testing.T) {
 		wg.Go(func() {
 			resp, err := transport.RoundTrip(&http.Request{})
 			require.NoError(t, err)
+			resp.Body.Close()
 			assert.Equal(t, "HTTP/test", resp.Proto)
 		})
 	}
@@ -488,7 +774,7 @@ func TestTransport_CloseIdleConnections(t *testing.T) {
 				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
 					inChs[i] <- struct{}{}
 					<-outChs[i]
-					return &http.Response{Proto: "HTTP/test"}, nil
+					return &http.Response{Body: http.NoBody, Proto: "HTTP/test"}, nil
 				},
 				CloseIdleConnectionsFunc: func() {
 					closeIdleConnectionsCnt.Add(1)
@@ -542,6 +828,7 @@ func TestTransport_CloseIdleConnections(t *testing.T) {
 		wg.Go(func() {
 			resp, err := transport.RoundTrip(&http.Request{})
 			require.NoError(t, err)
+			resp.Body.Close()
 			assert.Equal(t, "HTTP/test", resp.Proto)
 		})
 	}
@@ -564,6 +851,7 @@ func TestTransport_CloseIdleConnections(t *testing.T) {
 	}()
 	resp, err := transport.RoundTrip(&http.Request{})
 	require.NoError(t, err)
+	resp.Body.Close()
 	assert.Equal(t, "HTTP/test", resp.Proto)
 
 	assert.Equal(t, TransportStats{

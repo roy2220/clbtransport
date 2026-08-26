@@ -40,8 +40,15 @@ func ExampleTransport() {
 	}
 
 	for range 10 {
-		req, _ := http.NewRequest(http.MethodGet, s.URL, nil)
-		resp, _ := c.Do(req)
+		req, err := http.NewRequest(http.MethodGet, s.URL, nil)
+		if err != nil {
+			panic(err)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			panic(err)
+		}
+		defer resp.Body.Close()
 		data, _ := io.ReadAll(resp.Body)
 		fmt.Println(string(data))
 	}

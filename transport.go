@@ -3,6 +3,7 @@ package clbtransport
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -175,12 +176,34 @@ func NewTransport(config TransportConfig) *Transport {
 func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	sub := t.pickSub()
 	defer func() {
-		if cleanup := sub.RemoveRef(); cleanup != nil {
-			cleanup()
+		if sub != nil {
+			if cleanup := sub.RemoveRef(); cleanup != nil {
+				cleanup()
+			}
 		}
 	}()
 
-	return sub.RoundTripper.RoundTrip(request)
+	resp, err := sub.RoundTripper.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+
+	if w, ok := resp.Body.(io.Writer); ok {
+		resp.Body = &wrappedWritableBody{
+			wrappedBody: wrappedBody{
+				ReadCloser:   resp.Body,
+				SubTransport: sub,
+			},
+			Writer: w,
+		}
+	} else {
+		resp.Body = &wrappedBody{
+			ReadCloser:   resp.Body,
+			SubTransport: sub,
+		}
+	}
+	sub = nil
+	return resp, nil
 }
 
 func (t *Transport) pickSub() *subTransport {
@@ -309,4 +332,54 @@ func (t *subTransport) close() {
 		v.CloseIdleConnections()
 	}
 	t.EvictTimer.Stop()
+}
+
+type wrappedBody struct {
+	io.ReadCloser
+	SubTransport *subTransport
+
+	isClosed atomic.Bool
+}
+
+var _ interface {
+	io.Reader
+	io.WriterTo
+	io.Closer
+} = (*wrappedBody)(nil)
+
+func (b *wrappedBody) WriteTo(w io.Writer) (int64, error) {
+	if wt, ok := b.ReadCloser.(io.WriterTo); ok {
+		return wt.WriteTo(w)
+	}
+	return io.Copy(w, b.ReadCloser)
+}
+
+func (b *wrappedBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.isClosed.Swap(true) == false {
+		if cleanup := b.SubTransport.RemoveRef(); cleanup != nil {
+			cleanup()
+		}
+	}
+	return err
+}
+
+type wrappedWritableBody struct {
+	wrappedBody
+	io.Writer
+}
+
+var _ interface {
+	io.Reader
+	io.WriterTo
+	io.Writer
+	io.ReaderFrom
+	io.Closer
+} = (*wrappedWritableBody)(nil)
+
+func (b *wrappedWritableBody) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := b.Writer.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(b.Writer, r)
 }
