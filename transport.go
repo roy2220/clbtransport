@@ -225,6 +225,7 @@ func (t *Transport) addSubLocked(i int) *subTransport {
 	maxSubAge := t.calculateMaxSubAgeLocked()
 	sub := &subTransport{
 		RoundTripper: t.newRoundTripper(maxSubAge),
+		Clock:        t.config.Clock,
 		MaxAge:       maxSubAge,
 	}
 	t.subs[i] = sub
@@ -234,6 +235,7 @@ func (t *Transport) addSubLocked(i int) *subTransport {
 }
 
 func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
+	// Always set a proper IdleConnTimeout as a last resort against connection leaks.
 	idleConnTimeout := t.config.IdleConnTimeout
 	if !(idleConnTimeout >= 1 && idleConnTimeout <= maxSubAge) {
 		idleConnTimeout = maxSubAge
@@ -314,6 +316,7 @@ func (t *Transport) CloseIdleConnections() {
 
 type subTransport struct {
 	RoundTripper http.RoundTripper
+	Clock        clock.Clock
 	MaxAge       time.Duration // for testing only
 	EvictTimer   *clock.Timer
 
@@ -334,6 +337,9 @@ func (t *subTransport) close() {
 
 	if v, ok := t.RoundTripper.(closeIdler); ok {
 		v.CloseIdleConnections()
+		// Even if all response bodies are closed, some connections may be on
+		// the way to becoming Idle. Close them later.
+		t.Clock.AfterFunc(1*time.Second, v.CloseIdleConnections)
 	}
 	t.EvictTimer.Stop()
 }
@@ -359,13 +365,14 @@ func (b *wrappedBody) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (b *wrappedBody) Close() error {
-	err := b.ReadCloser.Close()
 	if b.isClosed.Swap(true) == false {
-		if cleanup := b.SubTransport.RemoveRef(); cleanup != nil {
-			cleanup()
-		}
+		defer func() {
+			if cleanup := b.SubTransport.RemoveRef(); cleanup != nil {
+				cleanup()
+			}
+		}()
 	}
-	return err
+	return b.ReadCloser.Close()
 }
 
 type wrappedWritableBody struct {

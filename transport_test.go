@@ -258,110 +258,152 @@ func TestNewTransport(t *testing.T) {
 }
 
 func TestTransport_RoundTrip(t *testing.T) {
-	var (
-		inChs          = make([]chan struct{}, 3)
-		outChs         = make([]chan struct{}, 3)
-		chIdx          = 0
-		randFloat64Cnt = 0
-	)
-	for i := range inChs {
-		inChs[i] = make(chan struct{})
-		outChs[i] = make(chan struct{})
-	}
+	{
+		var (
+			inChs          = make([]chan struct{}, 3)
+			outChs         = make([]chan struct{}, 3)
+			chIdx          = 0
+			randFloat64Cnt = 0
+		)
+		for i := range inChs {
+			inChs[i] = make(chan struct{})
+			outChs[i] = make(chan struct{})
+		}
 
-	transportConfig := TransportConfig{
-		HotConnsPerHost: 3,
+		transportConfig := TransportConfig{
+			HotConnsPerHost: 3,
 
-		MaxIdleConns:        111,
-		MaxIdleConnsPerHost: 222,
-		MaxConnsPerHost:     333,
+			MaxIdleConns:        111,
+			MaxIdleConnsPerHost: 222,
+			MaxConnsPerHost:     333,
 
-		Clock: clock.NewMock(),
-		RandFactory: func() *rand.Rand {
-			return rand.New(&mockSource{Float64: func() float64 {
-				randFloat64Cnt++
-				switch randFloat64Cnt {
-				case 1:
-					return 0.2
-				case 2:
-					return 0.4
-				case 3:
-					return 0.6
-				default:
-					return 0.8
+			Clock: clock.NewMock(),
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 {
+					randFloat64Cnt++
+					switch randFloat64Cnt {
+					case 1:
+						return 0.2
+					case 2:
+						return 0.4
+					case 3:
+						return 0.6
+					default:
+						return 0.8
+					}
+				}})
+			},
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				i := chIdx
+				chIdx = (chIdx + 1) % len(inChs)
+
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						inChs[i] <- struct{}{}
+						<-outChs[i]
+						return &http.Response{Body: http.NoBody, Proto: "HTTP/test"}, nil
+					},
 				}
-			}})
-		},
-		RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
-			i := chIdx
-			chIdx = (chIdx + 1) % len(inChs)
+			},
+		}
 
-			return &mockRoundTripper{
-				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
-					inChs[i] <- struct{}{}
-					<-outChs[i]
-					return &http.Response{Body: http.NoBody, Proto: "HTTP/test"}, nil
+		transport := NewTransport(transportConfig)
+		go func() {
+			<-inChs[0]
+			<-inChs[1]
+			<-inChs[2]
+			<-inChs[0]
+			assert.Equal(t, TransportStats{
+				Subs: []*SubTransportStats{
+					{
+						MaxAge:   "13m0s",
+						RefCount: 3,
+					},
+					{
+						MaxAge:   "11m0s",
+						RefCount: 2,
+					},
+					{
+						MaxAge:   "9m0s",
+						RefCount: 2,
+					},
 				},
-			}
-		},
-	}
+				NextSubIndex: 1,
+			}, transport.Stats())
+			outChs[0] <- struct{}{}
+			outChs[1] <- struct{}{}
+			outChs[2] <- struct{}{}
+			outChs[0] <- struct{}{}
+		}()
+		var wg sync.WaitGroup
+		for range 4 {
+			wg.Go(func() {
+				resp, err := transport.RoundTrip(&http.Request{})
+				require.NoError(t, err)
+				resp.Body.Close()
+				assert.Equal(t, "HTTP/test", resp.Proto)
+			})
+		}
+		wg.Wait()
 
-	transport := NewTransport(transportConfig)
-	go func() {
-		<-inChs[0]
-		<-inChs[1]
-		<-inChs[2]
-		<-inChs[0]
 		assert.Equal(t, TransportStats{
 			Subs: []*SubTransportStats{
 				{
 					MaxAge:   "13m0s",
-					RefCount: 3,
+					RefCount: 1,
 				},
 				{
 					MaxAge:   "11m0s",
-					RefCount: 2,
+					RefCount: 1,
 				},
 				{
 					MaxAge:   "9m0s",
-					RefCount: 2,
+					RefCount: 1,
 				},
 			},
 			NextSubIndex: 1,
 		}, transport.Stats())
-		outChs[0] <- struct{}{}
-		outChs[1] <- struct{}{}
-		outChs[2] <- struct{}{}
-		outChs[0] <- struct{}{}
-	}()
-	var wg sync.WaitGroup
-	for range 4 {
-		wg.Go(func() {
-			resp, err := transport.RoundTrip(&http.Request{})
-			require.NoError(t, err)
-			resp.Body.Close()
-			assert.Equal(t, "HTTP/test", resp.Proto)
-		})
 	}
-	wg.Wait()
 
-	assert.Equal(t, TransportStats{
-		Subs: []*SubTransportStats{
-			{
-				MaxAge:   "13m0s",
-				RefCount: 1,
+	{
+		var transportConfig TransportConfig
+		var closeIdleConnectionsCnt atomic.Int64
+		transportConfig = TransportConfig{
+			Clock: clock.NewMock(),
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 { return 0.8 }})
 			},
-			{
-				MaxAge:   "11m0s",
-				RefCount: 1,
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						transportConfig.Clock.(*clock.Mock).Add(1 * time.Hour)
+						return nil, errors.New("test error")
+					},
+					CloseIdleConnectionsFunc: func() {
+						closeIdleConnectionsCnt.Add(1)
+					},
+				}
 			},
-			{
-				MaxAge:   "9m0s",
-				RefCount: 1,
+		}
+		transport := NewTransport(transportConfig)
+		_, err := transport.RoundTrip(&http.Request{})
+		require.EqualError(t, err, "test error")
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				nil,
+				nil,
+				nil,
 			},
-		},
-		NextSubIndex: 1,
-	}, transport.Stats())
+			NextSubIndex: 1,
+		}, transport.Stats())
+
+		assert.Equal(t, int64(1), closeIdleConnectionsCnt.Load())
+
+		transportConfig.Clock.(*clock.Mock).Add(2 * time.Second)
+
+		assert.Equal(t, int64(2), closeIdleConnectionsCnt.Load())
+	}
 }
 
 func TestTransport_RoundTrip_Response_Body(t *testing.T) {
@@ -747,6 +789,10 @@ func TestTransport_EvictSub(t *testing.T) {
 
 	assert.Equal(t, int64(1), closeIdleConnectionsCnt.Load())
 
+	transportConfig.Clock.(*clock.Mock).Add(2 * time.Second)
+
+	assert.Equal(t, int64(2), closeIdleConnectionsCnt.Load())
+
 	transportConfig.Clock.(*clock.Mock).Add(2 * time.Minute)
 
 	assert.Equal(t, TransportStats{
@@ -761,7 +807,7 @@ func TestTransport_EvictSub(t *testing.T) {
 		NextSubIndex: 0,
 	}, transport.Stats())
 
-	assert.Equal(t, int64(2), closeIdleConnectionsCnt.Load())
+	assert.Equal(t, int64(4), closeIdleConnectionsCnt.Load())
 }
 
 func TestTransport_CloseIdleConnections(t *testing.T) {
