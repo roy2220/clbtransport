@@ -255,6 +255,39 @@ func TestNewTransport(t *testing.T) {
 
 		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
 	}
+
+	{
+		var underlyingTransport *http.Transport
+
+		transportConfig := TransportConfig{
+			ApproximateMaxConnAge:       16 * time.Minute,
+			ApproximateMaxConnAgeJitter: 1.0,
+			HotConnsPerHost:             5,
+
+			IdleConnTimeout: time.Hour,
+
+			Clock: clock.NewMock(),
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 { return 0.9999999999999 }})
+			},
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						underlyingTransport = transport
+						return &http.Response{Body: http.NoBody}, nil
+					},
+				}
+			},
+		}
+
+		transport := NewTransport(transportConfig)
+		resp, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.NotNil(t, underlyingTransport)
+
+		assert.Equal(t, time.Duration(1), underlyingTransport.IdleConnTimeout)
+	}
 }
 
 func TestTransport_RoundTrip(t *testing.T) {

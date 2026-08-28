@@ -296,7 +296,8 @@ func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
 }
 
 func (t *Transport) calculateMaxSubAgeLocked() time.Duration {
-	return time.Duration(float64(t.config.ApproximateMaxConnAge) * (1 + ((1 - 2*t.rand.Float64()) * t.config.ApproximateMaxConnAgeJitter)))
+	factor := 1 + t.config.ApproximateMaxConnAgeJitter*(1-2*t.rand.Float64())
+	return max(time.Duration(float64(t.config.ApproximateMaxConnAge)*factor), 1)
 }
 
 func (t *Transport) evictSub(sub *subTransport) {
