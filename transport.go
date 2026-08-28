@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"io"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"net"
@@ -151,15 +152,15 @@ func NewTransport(config TransportConfig) *Transport {
 		maxIdleConnsPerHost = config.MaxIdleConnsPerHost
 		maxConnsPerHost     = config.MaxConnsPerHost
 	)
-	if n := config.HotConnsPerHost; n >= 2 {
+	if n := float64(config.HotConnsPerHost); n >= 2 {
 		if maxIdleConns >= 1 {
-			maxIdleConns = int(math.Ceil(float64(maxIdleConns) / float64(n)))
+			maxIdleConns = int(math.Ceil(float64(maxIdleConns) / n))
 		}
 		if maxIdleConnsPerHost >= 1 {
-			maxIdleConnsPerHost = int(math.Ceil(float64(maxIdleConnsPerHost) / float64(n)))
+			maxIdleConnsPerHost = int(math.Ceil(float64(maxIdleConnsPerHost) / n))
 		}
 		if maxConnsPerHost >= 1 {
-			maxConnsPerHost = int(math.Ceil(float64(maxConnsPerHost) / float64(n)))
+			maxConnsPerHost = int(math.Ceil(float64(maxConnsPerHost) / n))
 		}
 	}
 	return &Transport{
@@ -235,11 +236,36 @@ func (t *Transport) addSubLocked(i int) *subTransport {
 }
 
 func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
+	// Clone TLSClientConfig/TLSNextProto/ProxyConnectHeader/HTTP2/Protocols to avoid data race.
+	tlsClientConfig := t.config.TLSClientConfig
+	if tlsClientConfig != nil {
+		tlsClientConfig = tlsClientConfig.Clone()
+	}
+	tlsNextProto := t.config.TLSNextProto
+	if tlsNextProto != nil {
+		tlsNextProto = maps.Clone(tlsNextProto)
+	}
+	proxyConnectHeader := t.config.ProxyConnectHeader
+	if proxyConnectHeader != nil {
+		proxyConnectHeader = proxyConnectHeader.Clone()
+	}
+	http2Config := t.config.HTTP2
+	if http2Config != nil {
+		clone := *http2Config
+		http2Config = &clone
+	}
+	protocols := t.config.Protocols
+	if protocols != nil {
+		clone := *protocols
+		protocols = &clone
+	}
+
 	// Always set a proper IdleConnTimeout as a last resort against connection leaks.
 	idleConnTimeout := t.config.IdleConnTimeout
 	if !(idleConnTimeout >= 1 && idleConnTimeout <= maxSubAge) {
 		idleConnTimeout = maxSubAge
 	}
+
 	return t.config.RoundTripperFactory(&http.Transport{
 		Proxy:                  t.config.Proxy,
 		OnProxyConnectResponse: t.config.OnProxyConnectResponse,
@@ -247,7 +273,7 @@ func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
 		Dial:                   t.config.Dial,
 		DialTLSContext:         t.config.DialTLSContext,
 		DialTLS:                t.config.DialTLS,
-		TLSClientConfig:        t.config.TLSClientConfig,
+		TLSClientConfig:        tlsClientConfig,
 		TLSHandshakeTimeout:    t.config.TLSHandshakeTimeout,
 		DisableKeepAlives:      t.config.DisableKeepAlives,
 		DisableCompression:     t.config.DisableCompression,
@@ -257,15 +283,15 @@ func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
 		IdleConnTimeout:        idleConnTimeout,
 		ResponseHeaderTimeout:  t.config.ResponseHeaderTimeout,
 		ExpectContinueTimeout:  t.config.ExpectContinueTimeout,
-		TLSNextProto:           t.config.TLSNextProto,
-		ProxyConnectHeader:     t.config.ProxyConnectHeader,
+		TLSNextProto:           tlsNextProto,
+		ProxyConnectHeader:     proxyConnectHeader,
 		GetProxyConnectHeader:  t.config.GetProxyConnectHeader,
 		MaxResponseHeaderBytes: t.config.MaxResponseHeaderBytes,
 		WriteBufferSize:        t.config.WriteBufferSize,
 		ReadBufferSize:         t.config.ReadBufferSize,
 		ForceAttemptHTTP2:      t.config.ForceAttemptHTTP2,
-		HTTP2:                  t.config.HTTP2,
-		Protocols:              t.config.Protocols,
+		HTTP2:                  http2Config,
+		Protocols:              protocols,
 	})
 }
 
