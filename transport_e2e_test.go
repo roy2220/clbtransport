@@ -31,9 +31,10 @@ func (c *connCounter) DialContext(ctx context.Context, network, addr string) (ne
 	if err != nil {
 		return nil, err
 	}
+	ts := time.Duration(time.Now().UnixNano()).Seconds()
 	n := c.OpenCount.Add(1)
 	m := c.ActiveCount.Add(1)
-	c.T.Logf("open_conn_count=%v active_conn_count=%v", n, m)
+	c.T.Logf("%.6f: open_conn_count=%v active_conn_count=%v", ts, n, m)
 	return &wrappedConn{
 		Conn: conn,
 
@@ -44,13 +45,19 @@ func (c *connCounter) DialContext(ctx context.Context, network, addr string) (ne
 type wrappedConn struct {
 	net.Conn
 
+	isClosed    atomic.Bool
 	connCounter *connCounter
 }
 
 func (c *wrappedConn) Close() error {
+	if c.isClosed.Swap(true) {
+		return nil
+	}
+
+	ts := time.Duration(time.Now().UnixNano()).Seconds()
 	n := c.connCounter.CloseCount.Add(1)
 	m := c.connCounter.ActiveCount.Add(-1)
-	c.connCounter.T.Logf("close_conn_count=%v active_conn_count=%v", n, m)
+	c.connCounter.T.Logf("%.6f: close_conn_count=%v active_conn_count=%v", ts, n, m)
 	return c.Conn.Close()
 }
 
@@ -108,20 +115,22 @@ func TestE2E_HTTP1(t *testing.T) {
 	wg.Wait()
 
 	client.CloseIdleConnections()
+	assert.Equal(t, int64(0), connCounter.ActiveCount.Load())
 	assert.GreaterOrEqual(t, connCounter.OpenCount.Load(), int64(9))
-	assert.Equal(t, connCounter.OpenCount.Load(), connCounter.CloseCount.Load())
 }
 
 func TestE2E_HTTP2(t *testing.T) {
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("hello"))
 	})
 
 	server := httptest.NewUnstartedServer(handler)
+	server.Config.Protocols = &protocols
+	server.Start()
 	defer server.Close()
-
-	server.EnableHTTP2 = true
-	server.StartTLS()
 
 	connCounter := connCounter{T: t}
 
@@ -130,10 +139,9 @@ func TestE2E_HTTP2(t *testing.T) {
 		ApproximateMaxConnAgeJitter: 0.5,
 		HotConnsPerHost:             3,
 
+		Protocols:           &protocols,
 		DialContext:         connCounter.DialContext,
-		TLSClientConfig:     server.Client().Transport.(*http.Transport).TLSClientConfig,
 		MaxIdleConnsPerHost: 100,
-		ForceAttemptHTTP2:   true,
 	})
 
 	client := http.Client{
@@ -171,6 +179,6 @@ func TestE2E_HTTP2(t *testing.T) {
 	wg.Wait()
 
 	client.CloseIdleConnections()
+	assert.Equal(t, int64(0), connCounter.ActiveCount.Load())
 	assert.GreaterOrEqual(t, connCounter.OpenCount.Load(), int64(9))
-	assert.Equal(t, connCounter.OpenCount.Load(), connCounter.CloseCount.Load())
 }

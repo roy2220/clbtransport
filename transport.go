@@ -5,12 +5,10 @@ import (
 	"crypto/tls"
 	"io"
 	"maps"
-	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -131,10 +129,7 @@ func (c *TransportConfig) applyDefaults() {
 // synchronized reconnects (see TransportConfig.ApproximateMaxConnAgeJitter and
 // TransportConfig.HotConnsPerHost).
 type Transport struct {
-	config              TransportConfig
-	maxIdleConns        int
-	maxIdleConnsPerHost int
-	maxConnsPerHost     int
+	config TransportConfig
 
 	lock         sync.Mutex
 	subs         []*subTransport
@@ -147,29 +142,10 @@ var _ http.RoundTripper = (*Transport)(nil)
 // NewTransport creates a new Transport with the given config.
 func NewTransport(config TransportConfig) *Transport {
 	config.applyDefaults()
-	var (
-		maxIdleConns        = config.MaxIdleConns
-		maxIdleConnsPerHost = config.MaxIdleConnsPerHost
-		maxConnsPerHost     = config.MaxConnsPerHost
-	)
-	if n := float64(config.HotConnsPerHost); n >= 2 {
-		if maxIdleConns >= 1 {
-			maxIdleConns = int(math.Ceil(float64(maxIdleConns) / n))
-		}
-		if maxIdleConnsPerHost >= 1 {
-			maxIdleConnsPerHost = int(math.Ceil(float64(maxIdleConnsPerHost) / n))
-		}
-		if maxConnsPerHost >= 1 {
-			maxConnsPerHost = int(math.Ceil(float64(maxConnsPerHost) / n))
-		}
-	}
 	return &Transport{
-		config:              config,
-		maxIdleConns:        maxIdleConns,
-		maxIdleConnsPerHost: maxIdleConnsPerHost,
-		maxConnsPerHost:     maxConnsPerHost,
-		subs:                make([]*subTransport, config.HotConnsPerHost),
-		rand:                config.RandFactory(),
+		config: config,
+		subs:   make([]*subTransport, config.HotConnsPerHost),
+		rand:   config.RandFactory(),
 	}
 }
 
@@ -208,91 +184,28 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 }
 
 func (t *Transport) pickSub() *subTransport {
+	var sub *subTransport
 	t.lock.Lock()
-	defer t.lock.Unlock()
+	defer func() {
+		t.lock.Unlock()
+		sub.Init()
+	}()
 
 	i := t.nextSubIndex
 	t.nextSubIndex = (t.nextSubIndex + 1) % len(t.subs)
-	sub := t.subs[i]
+	sub = t.subs[i]
 	if sub == nil {
-		sub = t.addSubLocked(i)
+		sub = &subTransport{
+			Index:         i,
+			MaxAge:        t.calculateMaxSubAgeLocked(),
+			HandleTimeout: t.evictSub,
+			Config:        &t.config,
+		}
+		t.subs[i] = sub
+		sub.AddRef()
 	}
-
 	sub.AddRef()
 	return sub
-}
-
-func (t *Transport) addSubLocked(i int) *subTransport {
-	maxSubAge := t.calculateMaxSubAgeLocked()
-	sub := &subTransport{
-		RoundTripper: t.newRoundTripper(maxSubAge),
-		Clock:        t.config.Clock,
-		MaxAge:       maxSubAge,
-	}
-	t.subs[i] = sub
-	sub.AddRef()
-	sub.EvictTimer = t.config.Clock.AfterFunc(maxSubAge, func() { t.evictSub(sub) })
-	return sub
-}
-
-func (t *Transport) newRoundTripper(maxSubAge time.Duration) http.RoundTripper {
-	// Clone TLSClientConfig/TLSNextProto/ProxyConnectHeader/HTTP2/Protocols to avoid data race.
-	tlsClientConfig := t.config.TLSClientConfig
-	if tlsClientConfig != nil {
-		tlsClientConfig = tlsClientConfig.Clone()
-	}
-	tlsNextProto := t.config.TLSNextProto
-	if tlsNextProto != nil {
-		tlsNextProto = maps.Clone(tlsNextProto)
-	}
-	proxyConnectHeader := t.config.ProxyConnectHeader
-	if proxyConnectHeader != nil {
-		proxyConnectHeader = proxyConnectHeader.Clone()
-	}
-	http2Config := t.config.HTTP2
-	if http2Config != nil {
-		clone := *http2Config
-		http2Config = &clone
-	}
-	protocols := t.config.Protocols
-	if protocols != nil {
-		clone := *protocols
-		protocols = &clone
-	}
-
-	// Always set a proper IdleConnTimeout as a last resort against connection leaks.
-	idleConnTimeout := t.config.IdleConnTimeout
-	if !(idleConnTimeout >= 1 && idleConnTimeout <= maxSubAge) {
-		idleConnTimeout = maxSubAge
-	}
-
-	return t.config.RoundTripperFactory(&http.Transport{
-		Proxy:                  t.config.Proxy,
-		OnProxyConnectResponse: t.config.OnProxyConnectResponse,
-		DialContext:            t.config.DialContext,
-		Dial:                   t.config.Dial,
-		DialTLSContext:         t.config.DialTLSContext,
-		DialTLS:                t.config.DialTLS,
-		TLSClientConfig:        tlsClientConfig,
-		TLSHandshakeTimeout:    t.config.TLSHandshakeTimeout,
-		DisableKeepAlives:      t.config.DisableKeepAlives,
-		DisableCompression:     t.config.DisableCompression,
-		MaxIdleConns:           t.maxIdleConns,
-		MaxIdleConnsPerHost:    t.maxIdleConnsPerHost,
-		MaxConnsPerHost:        t.maxConnsPerHost,
-		IdleConnTimeout:        idleConnTimeout,
-		ResponseHeaderTimeout:  t.config.ResponseHeaderTimeout,
-		ExpectContinueTimeout:  t.config.ExpectContinueTimeout,
-		TLSNextProto:           tlsNextProto,
-		ProxyConnectHeader:     proxyConnectHeader,
-		GetProxyConnectHeader:  t.config.GetProxyConnectHeader,
-		MaxResponseHeaderBytes: t.config.MaxResponseHeaderBytes,
-		WriteBufferSize:        t.config.WriteBufferSize,
-		ReadBufferSize:         t.config.ReadBufferSize,
-		ForceAttemptHTTP2:      t.config.ForceAttemptHTTP2,
-		HTTP2:                  http2Config,
-		Protocols:              protocols,
-	})
 }
 
 func (t *Transport) calculateMaxSubAgeLocked() time.Duration {
@@ -310,11 +223,10 @@ func (t *Transport) evictSub(sub *subTransport) {
 		}
 	}()
 
-	i := slices.Index(t.subs, sub)
-	if i < 0 {
+	if t.subs[sub.Index] != sub {
 		return
 	}
-	t.subs[i] = nil
+	t.subs[sub.Index] = nil
 	cleanup = sub.RemoveRef()
 }
 
@@ -342,12 +254,16 @@ func (t *Transport) CloseIdleConnections() {
 }
 
 type subTransport struct {
+	Index         int
+	MaxAge        time.Duration
+	HandleTimeout func(*subTransport)
+	Config        *TransportConfig
+
 	RoundTripper http.RoundTripper
-	Clock        clock.Clock
-	MaxAge       time.Duration // for testing only
-	EvictTimer   *clock.Timer
 
 	refCount atomic.Int64
+	initOnce sync.Once
+	timer    *clock.Timer
 }
 
 func (t *subTransport) AddRef() { t.refCount.Add(1) }
@@ -359,16 +275,113 @@ func (t *subTransport) RemoveRef() func() {
 	return nil
 }
 
+func (t *subTransport) Init() { t.initOnce.Do(t.init) }
+
+func (t *subTransport) init() {
+	var (
+		maxIdleConns        = t.Config.MaxIdleConns
+		maxIdleConnsPerHost = t.Config.MaxIdleConnsPerHost
+		maxConnsPerHost     = t.Config.MaxConnsPerHost
+	)
+	if n := t.Config.HotConnsPerHost; n >= 2 {
+		if maxIdleConns >= 1 {
+			if maxIdleConns >= n && t.Index >= maxIdleConns%n {
+				maxIdleConns /= n
+			} else {
+				maxIdleConns = maxIdleConns/n + 1
+			}
+		}
+		if maxIdleConnsPerHost >= 1 {
+			if maxIdleConnsPerHost >= n && t.Index >= maxIdleConnsPerHost%n {
+				maxIdleConnsPerHost /= n
+			} else {
+				maxIdleConnsPerHost = maxIdleConnsPerHost/n + 1
+			}
+		}
+		if maxConnsPerHost >= 1 {
+			if maxConnsPerHost >= n && t.Index >= maxConnsPerHost%n {
+				maxConnsPerHost /= n
+			} else {
+				maxConnsPerHost = maxConnsPerHost/n + 1
+			}
+		}
+	}
+
+	// Always set a proper IdleConnTimeout as a last resort against connection leaks.
+	idleConnTimeout := t.Config.IdleConnTimeout
+	if !(idleConnTimeout >= 1 && idleConnTimeout <= t.MaxAge) {
+		idleConnTimeout = t.MaxAge
+	}
+
+	// Clone TLSClientConfig/TLSNextProto/ProxyConnectHeader/HTTP2/Protocols to avoid data race.
+	var (
+		tlsClientConfig    = t.Config.TLSClientConfig
+		tlsNextProto       = t.Config.TLSNextProto
+		proxyConnectHeader = t.Config.ProxyConnectHeader
+		http2Config        = t.Config.HTTP2
+		protocols          = t.Config.Protocols
+	)
+	if tlsClientConfig != nil {
+		tlsClientConfig = tlsClientConfig.Clone()
+	}
+	if tlsNextProto != nil {
+		tlsNextProto = maps.Clone(tlsNextProto)
+	}
+	if proxyConnectHeader != nil {
+		proxyConnectHeader = proxyConnectHeader.Clone()
+	}
+	if http2Config != nil {
+		clone := *http2Config
+		http2Config = &clone
+	}
+	if protocols != nil {
+		clone := *protocols
+		protocols = &clone
+	}
+
+	t.RoundTripper = t.Config.RoundTripperFactory(&http.Transport{
+		Proxy:                  t.Config.Proxy,
+		OnProxyConnectResponse: t.Config.OnProxyConnectResponse,
+		DialContext:            t.Config.DialContext,
+		Dial:                   t.Config.Dial,
+		DialTLSContext:         t.Config.DialTLSContext,
+		DialTLS:                t.Config.DialTLS,
+		TLSClientConfig:        tlsClientConfig,
+		TLSHandshakeTimeout:    t.Config.TLSHandshakeTimeout,
+		DisableKeepAlives:      t.Config.DisableKeepAlives,
+		DisableCompression:     t.Config.DisableCompression,
+		MaxIdleConns:           maxIdleConns,
+		MaxIdleConnsPerHost:    maxIdleConnsPerHost,
+		MaxConnsPerHost:        maxConnsPerHost,
+		IdleConnTimeout:        idleConnTimeout,
+		ResponseHeaderTimeout:  t.Config.ResponseHeaderTimeout,
+		ExpectContinueTimeout:  t.Config.ExpectContinueTimeout,
+		TLSNextProto:           tlsNextProto,
+		ProxyConnectHeader:     proxyConnectHeader,
+		GetProxyConnectHeader:  t.Config.GetProxyConnectHeader,
+		MaxResponseHeaderBytes: t.Config.MaxResponseHeaderBytes,
+		WriteBufferSize:        t.Config.WriteBufferSize,
+		ReadBufferSize:         t.Config.ReadBufferSize,
+		ForceAttemptHTTP2:      t.Config.ForceAttemptHTTP2,
+		HTTP2:                  http2Config,
+		Protocols:              protocols,
+	})
+
+	t.timer = t.Config.Clock.AfterFunc(t.MaxAge, func() { t.HandleTimeout(t) })
+}
+
 func (t *subTransport) close() {
+	t.initOnce.Do(func() { panic("unreachable") })
+
 	type closeIdler interface{ CloseIdleConnections() }
 
 	if v, ok := t.RoundTripper.(closeIdler); ok {
 		v.CloseIdleConnections()
 		// Even if all response bodies are closed, some connections may be on
 		// the way to becoming Idle. Close them later.
-		t.Clock.AfterFunc(1*time.Second, v.CloseIdleConnections)
+		t.Config.Clock.AfterFunc(1*time.Second, v.CloseIdleConnections)
 	}
-	t.EvictTimer.Stop()
+	t.timer.Stop()
 }
 
 type wrappedBody struct {
@@ -392,7 +405,7 @@ func (b *wrappedBody) WriteTo(w io.Writer) (int64, error) {
 }
 
 func (b *wrappedBody) Close() error {
-	if b.isClosed.Swap(true) == false {
+	if !b.isClosed.Swap(true) {
 		defer func() {
 			if cleanup := b.SubTransport.RemoveRef(); cleanup != nil {
 				cleanup()

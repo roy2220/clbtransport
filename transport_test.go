@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
-	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -96,9 +95,9 @@ func TestNewTransport(t *testing.T) {
 			TLSHandshakeTimeout:    123,
 			DisableKeepAlives:      true,
 			DisableCompression:     true,
-			MaxIdleConns:           111,
-			MaxIdleConnsPerHost:    222,
-			MaxConnsPerHost:        333,
+			MaxIdleConns:           111 * DefaultHotConnsPerHost,
+			MaxIdleConnsPerHost:    222 * DefaultHotConnsPerHost,
+			MaxConnsPerHost:        333 * DefaultHotConnsPerHost,
 			IdleConnTimeout:        234,
 			ResponseHeaderTimeout:  345,
 			ExpectContinueTimeout:  456,
@@ -142,9 +141,9 @@ func TestNewTransport(t *testing.T) {
 		assert.Equal(t, transportConfig.TLSHandshakeTimeout, underlyingTransport.TLSHandshakeTimeout)
 		assert.Equal(t, transportConfig.DisableKeepAlives, underlyingTransport.DisableKeepAlives)
 		assert.Equal(t, transportConfig.DisableCompression, underlyingTransport.DisableCompression)
-		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxIdleConns)/float64(DefaultHotConnsPerHost))), underlyingTransport.MaxIdleConns)
-		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxIdleConnsPerHost)/float64(DefaultHotConnsPerHost))), underlyingTransport.MaxIdleConnsPerHost)
-		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxConnsPerHost)/float64(DefaultHotConnsPerHost))), underlyingTransport.MaxConnsPerHost)
+		assert.Equal(t, transportConfig.MaxIdleConns/DefaultHotConnsPerHost, underlyingTransport.MaxIdleConns)
+		assert.Equal(t, transportConfig.MaxIdleConnsPerHost/DefaultHotConnsPerHost, underlyingTransport.MaxIdleConnsPerHost)
+		assert.Equal(t, transportConfig.MaxConnsPerHost/DefaultHotConnsPerHost, underlyingTransport.MaxConnsPerHost)
 		assert.Equal(t, transportConfig.IdleConnTimeout, underlyingTransport.IdleConnTimeout)
 		assert.Equal(t, transportConfig.ResponseHeaderTimeout, underlyingTransport.ResponseHeaderTimeout)
 		assert.Equal(t, transportConfig.ExpectContinueTimeout, underlyingTransport.ExpectContinueTimeout)
@@ -179,9 +178,9 @@ func TestNewTransport(t *testing.T) {
 			ApproximateMaxConnAgeJitter: 0.8,
 			HotConnsPerHost:             5,
 
-			MaxIdleConns: 111,
-			// MaxIdleConnsPerHost: 222,
-			MaxConnsPerHost: 333,
+			MaxIdleConns: 6,
+			// MaxIdleConnsPerHost: 2,
+			MaxConnsPerHost: 12,
 
 			Clock: clock.NewMock(),
 			RandFactory: func() *rand.Rand {
@@ -203,9 +202,29 @@ func TestNewTransport(t *testing.T) {
 		resp.Body.Close()
 		require.NotNil(t, underlyingTransport)
 
-		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxIdleConns)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxIdleConns)
-		assert.Equal(t, int(math.Ceil(float64(http.DefaultMaxIdleConnsPerHost)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxIdleConnsPerHost)
-		assert.Equal(t, int(math.Ceil(float64(transportConfig.MaxConnsPerHost)/float64(transportConfig.HotConnsPerHost))), underlyingTransport.MaxConnsPerHost)
+		assert.Equal(t, 2, underlyingTransport.MaxIdleConns)
+		assert.Equal(t, 1, underlyingTransport.MaxIdleConnsPerHost)
+		assert.Equal(t, 3, underlyingTransport.MaxConnsPerHost)
+		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
+
+		resp, err = transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.NotNil(t, underlyingTransport)
+
+		assert.Equal(t, 1, underlyingTransport.MaxIdleConns)
+		assert.Equal(t, 1, underlyingTransport.MaxIdleConnsPerHost)
+		assert.Equal(t, 3, underlyingTransport.MaxConnsPerHost)
+		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
+
+		resp, err = transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp.Body.Close()
+		require.NotNil(t, underlyingTransport)
+
+		assert.Equal(t, 1, underlyingTransport.MaxIdleConns)
+		assert.Equal(t, 1, underlyingTransport.MaxIdleConnsPerHost)
+		assert.Equal(t, 2, underlyingTransport.MaxConnsPerHost)
 		assert.Equal(t, 16*time.Minute, underlyingTransport.IdleConnTimeout)
 
 		assert.Equal(t, TransportStats{
@@ -214,12 +233,18 @@ func TestNewTransport(t *testing.T) {
 					MaxAge:   "16m0s",
 					RefCount: 1,
 				},
-				nil,
-				nil,
+				{
+					MaxAge:   "16m0s",
+					RefCount: 1,
+				},
+				{
+					MaxAge:   "16m0s",
+					RefCount: 1,
+				},
 				nil,
 				nil,
 			},
-			NextSubIndex: 1,
+			NextSubIndex: 3,
 		}, transport.Stats())
 	}
 
@@ -293,9 +318,9 @@ func TestNewTransport(t *testing.T) {
 func TestTransport_RoundTrip(t *testing.T) {
 	{
 		var (
+			chOff          atomic.Int64
 			inChs          = make([]chan struct{}, 3)
 			outChs         = make([]chan struct{}, 3)
-			chIdx          = 0
 			randFloat64Cnt = 0
 		)
 		for i := range inChs {
@@ -327,8 +352,7 @@ func TestTransport_RoundTrip(t *testing.T) {
 				}})
 			},
 			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
-				i := chIdx
-				chIdx = (chIdx + 1) % len(inChs)
+				i := int(chOff.Add(1)-1) % len(inChs)
 
 				return &mockRoundTripper{
 					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
@@ -691,9 +715,9 @@ func TestTransport_RoundTrip_Response_Body(t *testing.T) {
 
 func TestTransport_EvictSub(t *testing.T) {
 	var (
+		chOff                   atomic.Int64
 		inChs                   = make([]chan struct{}, 3)
 		outChs                  = make([]chan struct{}, 3)
-		chIdx                   = 0
 		randFloat64Cnt          = 0
 		closeIdleConnectionsCnt atomic.Int64
 	)
@@ -726,8 +750,7 @@ func TestTransport_EvictSub(t *testing.T) {
 			}})
 		},
 		RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
-			i := chIdx
-			chIdx = (chIdx + 1) % len(inChs)
+			i := int(chOff.Add(1)-1) % len(inChs)
 
 			return &mockRoundTripper{
 				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
@@ -845,9 +868,9 @@ func TestTransport_EvictSub(t *testing.T) {
 
 func TestTransport_CloseIdleConnections(t *testing.T) {
 	var (
+		chOff                   atomic.Int64
 		inChs                   = make([]chan struct{}, 3)
 		outChs                  = make([]chan struct{}, 3)
-		chIdx                   = 0
 		randFloat64Cnt          = 0
 		closeIdleConnectionsCnt atomic.Int64
 	)
@@ -880,8 +903,7 @@ func TestTransport_CloseIdleConnections(t *testing.T) {
 			}})
 		},
 		RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
-			i := chIdx
-			chIdx = (chIdx + 1) % len(inChs)
+			i := int(chOff.Add(1)-1) % len(inChs)
 
 			return &mockRoundTripper{
 				RoundTripFunc: func(r *http.Request) (*http.Response, error) {
