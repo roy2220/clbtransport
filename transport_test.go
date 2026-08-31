@@ -461,6 +461,110 @@ func TestTransport_RoundTrip(t *testing.T) {
 
 		assert.Equal(t, int64(2), closeIdleConnectionsCnt.Load())
 	}
+
+	{
+		var transportConfig TransportConfig
+		var closeIdleConnectionsCnt atomic.Int64
+		var randFloat64Cnt int
+		transportConfig = TransportConfig{
+			HotConnsPerHost: 2,
+			Clock:           clock.NewMock(),
+			RandFactory: func() *rand.Rand {
+				return rand.New(&mockSource{Float64: func() float64 {
+					randFloat64Cnt++
+					switch randFloat64Cnt {
+					case 1:
+						return 0.4
+					case 2:
+						return 0.2
+					}
+					return 0.8
+				}})
+			},
+			RoundTripperFactory: func(transport *http.Transport) http.RoundTripper {
+				return &mockRoundTripper{
+					RoundTripFunc: func(r *http.Request) (*http.Response, error) {
+						return &http.Response{Body: http.NoBody}, nil
+					},
+					CloseIdleConnectionsFunc: func() {
+						closeIdleConnectionsCnt.Add(1)
+					},
+				}
+			},
+		}
+
+		transport := NewTransport(transportConfig)
+		resp1, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp2, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp2.Body.Close()
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				{
+					MaxAge:   "11m0s",
+					RefCount: 2,
+				},
+				{
+					MaxAge:   "13m0s",
+					RefCount: 1,
+				},
+			},
+			NextSubIndex: 0,
+		}, transport.Stats())
+
+		resp3, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				{
+					MaxAge:   "11m0s",
+					RefCount: 2,
+				},
+				{
+					MaxAge:   "13m0s",
+					RefCount: 2,
+				},
+			},
+			NextSubIndex: 1,
+		}, transport.Stats())
+
+		resp1.Body.Close()
+		resp3.Body.Close()
+
+		transportConfig.Clock.(*clock.Mock).Add(12 * time.Minute)
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				nil,
+				{
+					MaxAge:   "13m0s",
+					RefCount: 1,
+				},
+			},
+			NextSubIndex: 1,
+		}, transport.Stats())
+
+		resp4, err := transport.RoundTrip(&http.Request{})
+		require.NoError(t, err)
+		resp4.Body.Close()
+
+		assert.Equal(t, TransportStats{
+			Subs: []*SubTransportStats{
+				{
+					MaxAge:   "7m0s",
+					RefCount: 1,
+				},
+				{
+					MaxAge:   "13m0s",
+					RefCount: 1,
+				},
+			},
+			NextSubIndex: 0,
+		}, transport.Stats())
+	}
 }
 
 func TestTransport_RoundTrip_Response_Body(t *testing.T) {

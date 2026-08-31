@@ -191,19 +191,39 @@ func (t *Transport) pickSub() *subTransport {
 		sub.Init()
 	}()
 
-	i := t.nextSubIndex
-	t.nextSubIndex = (t.nextSubIndex + 1) % len(t.subs)
+	i, n := t.nextSubIndex, len(t.subs)
+	t.nextSubIndex = (i + 1) % n
 	sub = t.subs[i]
-	if sub == nil {
-		sub = &subTransport{
-			Index:         i,
-			MaxAge:        t.calculateMaxSubAgeLocked(),
-			HandleTimeout: t.evictSub,
-			Config:        &t.config,
+	switch {
+	case sub == nil:
+		sub = t.addSubLocked(i)
+	case n >= 2:
+		// Use the Power of Two Choices (P2C) algorithm.
+		j := (i + 1 + t.rand.IntN(n-1)) % n
+		otherSub := t.subs[j]
+		switch {
+		case otherSub == nil:
+			sub = t.addSubLocked(j)
+		case otherSub.RefCount() < sub.RefCount():
+			// For HTTP/1.x, RefCount reflects active in-flight requests.
+			// A newly created subTransport often experiences a higher in-flight request count
+			// while dialing new connections (since no idle connections are available yet).
+			// P2C helps disfavor high-load subTransports to prevent connection storming.
+			sub = otherSub
 		}
-		t.subs[i] = sub
-		sub.AddRef()
 	}
+	sub.AddRef()
+	return sub
+}
+
+func (t *Transport) addSubLocked(i int) *subTransport {
+	sub := &subTransport{
+		Index:         i,
+		MaxAge:        t.calculateMaxSubAgeLocked(),
+		HandleTimeout: t.evictSub,
+		Config:        &t.config,
+	}
+	t.subs[i] = sub
 	sub.AddRef()
 	return sub
 }
@@ -274,6 +294,8 @@ func (t *subTransport) RemoveRef() func() {
 	}
 	return nil
 }
+
+func (t *subTransport) RefCount() int { return int(t.refCount.Load()) }
 
 func (t *subTransport) Init() { t.initOnce.Do(t.init) }
 

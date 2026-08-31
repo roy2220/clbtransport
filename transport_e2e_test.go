@@ -5,6 +5,7 @@ package clbtransport_test
 import (
 	"context"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,7 @@ func (c *wrappedConn) Close() error {
 
 func TestE2E_HTTP1(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Duration(rand.IntN(100)) * time.Millisecond)
 		w.Write([]byte("hello"))
 	})
 
@@ -87,7 +89,7 @@ func TestE2E_HTTP1(t *testing.T) {
 	tokens := make(chan struct{}, 10)
 	go func() {
 		for range 1000 {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(time.Duration(rand.IntN(20)) * time.Millisecond)
 			tokens <- struct{}{}
 		}
 		close(tokens)
@@ -124,6 +126,7 @@ func TestE2E_HTTP2(t *testing.T) {
 	protocols.SetUnencryptedHTTP2(true)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Duration(rand.IntN(100)) * time.Millisecond)
 		w.Write([]byte("hello"))
 	})
 
@@ -151,7 +154,7 @@ func TestE2E_HTTP2(t *testing.T) {
 	tokens := make(chan struct{}, 10)
 	go func() {
 		for range 1000 {
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(time.Duration(rand.IntN(20)) * time.Millisecond)
 			tokens <- struct{}{}
 		}
 		close(tokens)
