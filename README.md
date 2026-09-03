@@ -33,7 +33,7 @@ So long-lived (keep-alive) connections are non-negotiable. The real problem beco
 `clbtransport` controls that frequency along two axes:
 
 1. **Bound connection lifetime.** Long-lived connections aren't allowed to live forever — after some time (with jitter, to avoid synchronized reconnects) they're retired, giving requests a fresh chance to land on a different node.
-2. **Spread connections per host.** Since connection lifetime can't be pushed arbitrarily low without hurting latency/SLA (TCP setup blocks the request), a small number of independent connections are kept "hot" per host in parallel, multiplying the opportunities for requests to fan out across nodes.
+2. **Spread connections per host.** Since connection lifetime can't be pushed arbitrarily low without hurting latency/SLA (TCP setup blocks the request), at least a small number of independent connections are kept "hot" per host under load, multiplying the opportunities for requests to fan out across nodes.
 
 The result behaves like a standard `http.RoundTripper` — a drop-in replacement for `http.Transport` — that quietly rebalances traffic in the background instead of relying on cluster-side machinery.
 
@@ -98,7 +98,7 @@ That's it — use `client` exactly as you would with the standard library.
 |---|---|---|
 | `ApproximateMaxConnAge` | 10 minutes | Soft upper bound on how long a connection may be reused. In-use connections are allowed to finish. |
 | `ApproximateMaxConnAgeJitter` | 0.5 | Fraction of jitter applied to `ApproximateMaxConnAge`, drawn uniformly from `[(1-jitter)*MaxAge, (1+jitter)*MaxAge]`. |
-| `HotConnsPerHost` | 3 | Number of independent connections kept active per host. |
+| `HotConnsPerHost` | 3 | Minimum number of independent connections kept active per host under load. |
 
 All other fields mirror `http.Transport` and are passed through; see the [Go documentation](https://pkg.go.dev/net/http#Transport) for details.
 
@@ -113,7 +113,6 @@ All other fields mirror `http.Transport` and are passed through; see the [Go doc
 It's *not* a substitute for:
 
 - Health-aware routing (it doesn't know which backends are unhealthy).
-- Retries, circuit breaking, or other resilience patterns.
 - Scenarios where the destination is fixed regardless of when the connection is opened (there's nothing for a new connection to be routed differently to).
 
 ## License
