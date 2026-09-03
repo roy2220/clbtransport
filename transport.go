@@ -205,10 +205,11 @@ func (t *Transport) pickSub() *subTransport {
 		case otherSub == nil:
 			sub = t.addSubLocked(j)
 		case otherSub.RefCount() < sub.RefCount():
-			// For HTTP/1.x, RefCount reflects active in-flight requests.
-			// A newly created subTransport often experiences a higher in-flight request count
-			// while dialing new connections (since no idle connections are available yet).
-			// P2C helps disfavor high-load subTransports to prevent connection storming.
+			// RefCount reflects active in-flight requests.
+			// A newly created subTransport often has a higher in-flight request count
+			// due to cold-start overhead (e.g., TCP handshake and slow start).
+			// P2C prevents cold subTransports from receiving excessive traffic until
+			// they are warm.
 			sub = otherSub
 		}
 	}
