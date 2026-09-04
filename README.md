@@ -106,14 +106,14 @@ All other fields mirror `http.Transport` and are passed through; see the [Go doc
 
 `clbtransport` is a good fit when:
 
-- You're calling a Kubernetes Service over plain HTTP/HTTPS keep-alive connections — including a **ClusterIP** Service.
-- More generally, any DNS name backed by multiple IPs, or any address whose actual destination is chosen anew each time a TCP connection is established.
-- You want better load distribution without introducing a mesh, gateway, or client-side service discovery.
+- **☑** You're calling a Kubernetes Service over plain HTTP/HTTPS keep-alive connections — including a **ClusterIP** Service.
+- **☑** More generally, any DNS name backed by multiple IPs, or any address whose actual destination is chosen anew each time a TCP connection is established.
+- **☑** You want better load distribution without introducing a mesh, gateway, or client-side service discovery.
 
 It's *not* a substitute for:
 
-- Health-aware routing (it doesn't know which backends are unhealthy).
-- Scenarios where the destination is fixed regardless of when the connection is opened (there's nothing for a new connection to be routed differently to).
+- **☒** Health-aware routing (it doesn't know which backends are unhealthy).
+- **☒** Scenarios where the destination is fixed regardless of when the connection is opened (there's nothing for a new connection to be routed differently to).
 
 ## License
 
