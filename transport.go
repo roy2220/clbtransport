@@ -48,10 +48,10 @@ type TransportConfig struct {
 	// Values <= 0 default to 0.5; values > 1 are clamped to 1.
 	ApproximateMaxConnAgeJitter float64
 
-	// HotConnsPerHost controls how many independent connections are actively
-	// used per host, to avoid pinning traffic to a single backend when a
-	// host has several. Higher values improve load distribution at the cost of
-	// additional connections.
+	// HotConnsPerHost controls the minimum number of independent connections
+	// that are actively used per host under load, to avoid pinning traffic to a
+	// single backend when a host has several. Higher values improve load
+	// distribution at the cost of additional connections.
 	// Values <= 0 default to 3.
 	HotConnsPerHost int
 
