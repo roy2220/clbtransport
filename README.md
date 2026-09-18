@@ -63,7 +63,7 @@ func main() {
         // Retire a connection after roughly 10 minutes of reuse (jittered).
         ApproximateMaxConnAge:       10 * time.Minute,
         ApproximateMaxConnAgeJitter: 0.5,
-        // Keep 3 independent connections per host "hot" at once.
+        // Keep 3 independent connections per host "hot" at least.
         HotConnsPerHost: 3,
 
         // Options below are forwarded to the underlying `http.Transport`:
