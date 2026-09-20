@@ -5,6 +5,9 @@
 
 A minimalist Go `http.Transport` wrapper that implements client-side load balancing.
 
+> [!NOTE]
+> Except for the documentation, every line of code is human-crafted. **No AI slop included**.
+
 ## The problem
 
 Kubernetes is the standard infra for cloud-native workloads today, and most backend developers eventually hit the same wall: calling another service through its Kubernetes Service DNS name over plain HTTP leads to uneven load across backend pods.
