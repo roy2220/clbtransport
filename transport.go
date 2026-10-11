@@ -43,7 +43,7 @@ type TransportConfig struct {
 	ApproximateMaxConnAge time.Duration
 
 	// ApproximateMaxConnAgeJitter is the random jitter applied to
-	// ApproximateMaxConnAge, as a fraction in [0, 1]. The effective age is
+	// ApproximateMaxConnAge, as a fraction in (0.0, 1.0]. The effective age is
 	// drawn uniformly from [(1-jitter)*MaxConnAge, (1+jitter)*MaxConnAge].
 	// Values <= 0 default to 0.5; values > 1 are clamped to 1.
 	ApproximateMaxConnAgeJitter float64
