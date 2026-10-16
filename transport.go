@@ -1,3 +1,5 @@
+// Package clbtransport provides a minimalist wrapper around http.Transport
+// that implements client-side load balancing.
 package clbtransport
 
 import (
@@ -35,27 +37,28 @@ var (
 
 // TransportConfig configures a Transport.
 type TransportConfig struct {
-	// ApproximateMaxConnAge limits how long a connection may be reused for new
-	// requests. This prevents a long-lived connection from pinning traffic to a
-	// single backend behind a host. The bound is soft: in-use connections are
-	// allowed to finish. Jitter is applied (see ApproximateMaxConnAgeJitter).
-	// Values <= 0 default to 10 minutes.
+	// ApproximateMaxConnAge limits how long a connection may be reused for
+	// new requests. This prevents a long-lived connection from pinning
+	// traffic to a single backend behind a host. The bound is soft:
+	// in-use connections are allowed to finish. Jitter is applied (see
+	// ApproximateMaxConnAgeJitter). Values <= 0 default to 10 minutes.
 	ApproximateMaxConnAge time.Duration
 
 	// ApproximateMaxConnAgeJitter is the random jitter applied to
-	// ApproximateMaxConnAge, as a fraction in (0.0, 1.0]. The effective age is
-	// drawn uniformly from [(1-jitter)*MaxConnAge, (1+jitter)*MaxConnAge].
-	// Values <= 0 default to 0.5; values > 1 are clamped to 1.
+	// ApproximateMaxConnAge, as a fraction in (0.0, 1.0]. The effective age
+	// is drawn uniformly from [(1-jitter)*max, (1+jitter)*max]. Values <= 0
+	// default to 0.5; values > 1 are clamped to 1.
 	ApproximateMaxConnAgeJitter float64
 
-	// HotConnsPerHost controls the minimum number of independent connections
-	// that are actively used per host under load, to avoid pinning traffic to a
-	// single backend when a host has several. Higher values improve load
-	// distribution at the cost of additional connections.
-	// Values <= 0 default to 3.
+	// HotConnsPerHost controls the minimum number of independent
+	// connections that are actively used per host under load, to avoid
+	// pinning traffic to a single backend when a host has several.
+	// Higher values improve load distribution at the cost of additional
+	// connections. Values <= 0 default to 3.
 	HotConnsPerHost int
 
-	// The following options mirror http.Transport; see its docs for details.
+	// The following options mirror http.Transport; see its docs for
+	// details.
 	Proxy                  func(*http.Request) (*url.URL, error)
 	OnProxyConnectResponse func(ctx context.Context, proxyURL *url.URL, connectReq *http.Request, connectRes *http.Response) error
 	DialContext            func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -84,13 +87,15 @@ type TransportConfig struct {
 
 	// The options below serve for testing.
 
-	// Clock specifies the clock interface to use for time-related operations.
+	// Clock specifies the clock interface to use for time-related
+	// operations.
 	Clock clock.Clock
 
 	// Rand specifies the random number generator to use.
 	RandFactory func() *rand.Rand
 
-	// RoundTripperFactory specifies the function to use for creating http.RoundTripper instances.
+	// RoundTripperFactory specifies the function to use for creating
+	// http.RoundTripper instances.
 	RoundTripperFactory func(*http.Transport) http.RoundTripper
 }
 
@@ -123,11 +128,9 @@ func (c *TransportConfig) applyDefaults() {
 	}
 }
 
-// Transport implements [http.RoundTripper] for HTTP, HTTPS, and HTTP proxies
+// Transport implements http.RoundTripper for HTTP, HTTPS, and HTTP proxies
 // (including CONNECT). Unlike http.Transport, it bounds connection reuse age
-// (see TransportConfig.ApproximateMaxConnAge) and spreads connections to avoid
-// synchronized reconnects (see TransportConfig.ApproximateMaxConnAgeJitter and
-// TransportConfig.HotConnsPerHost).
+// and spreads connections.
 type Transport struct {
 	config TransportConfig
 
@@ -149,7 +152,7 @@ func NewTransport(config TransportConfig) *Transport {
 	}
 }
 
-// RoundTrip implements the [http.RoundTripper] interface.
+// RoundTrip implements the http.RoundTripper interface.
 func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	sub := t.pickSub()
 	defer func() {
@@ -205,10 +208,11 @@ func (t *Transport) pickSub() *subTransport {
 		case otherSub == nil:
 			sub = t.addSubLocked(j)
 		case otherSub.RefCount() < sub.RefCount():
-			// RefCount reflects active in-flight requests.
-			// A newly created subTransport often has a higher in-flight request count
-			// due to cold-start overhead (e.g., TCP handshake and slow start).
-			// P2C prevents cold subTransports from receiving excessive traffic until
+			// RefCount reflects active in-flight requests. A newly
+			// created subTransport often has a higher in-flight
+			// request count due to cold-start overhead (e.g.,
+			// TCP handshake and slow start). P2C prevents cold
+			// subTransports from receiving excessive traffic until
 			// they are warm.
 			sub = otherSub
 		}
@@ -400,8 +404,8 @@ func (t *subTransport) close() {
 
 	if v, ok := t.RoundTripper.(closeIdler); ok {
 		v.CloseIdleConnections()
-		// Even if all response bodies are closed, some connections may be on
-		// the way to becoming Idle. Close them later.
+		// Even if all response bodies are closed, some connections may
+		// be on the way to becoming Idle. Close them later.
 		t.Config.Clock.AfterFunc(1*time.Second, v.CloseIdleConnections)
 	}
 	t.timer.Stop()
