@@ -14,8 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/benbjohnson/clock"
 )
 
 const (
@@ -25,8 +23,6 @@ const (
 )
 
 var (
-	defaultClock = clock.New()
-
 	defaultRandFactory = func() *rand.Rand {
 		source := rand.NewPCG(uint64(time.Now().UnixNano()), rand.Uint64())
 		return rand.New(source)
@@ -86,17 +82,8 @@ type TransportConfig struct {
 	Protocols              *http.Protocols
 
 	// The options below serve for testing.
-
-	// Clock specifies the clock interface to use for time-related
-	// operations.
-	Clock clock.Clock
-
-	// Rand specifies the random number generator to use.
-	RandFactory func() *rand.Rand
-
-	// RoundTripperFactory specifies the function to use for creating
-	// http.RoundTripper instances.
-	RoundTripperFactory func(*http.Transport) http.RoundTripper
+	randFactory         func() *rand.Rand
+	roundTripperFactory func(*http.Transport) http.RoundTripper
 }
 
 func (c *TransportConfig) applyDefaults() {
@@ -117,14 +104,11 @@ func (c *TransportConfig) applyDefaults() {
 		c.MaxIdleConnsPerHost = http.DefaultMaxIdleConnsPerHost
 	}
 
-	if c.Clock == nil {
-		c.Clock = defaultClock
+	if c.randFactory == nil {
+		c.randFactory = defaultRandFactory
 	}
-	if c.RandFactory == nil {
-		c.RandFactory = defaultRandFactory
-	}
-	if c.RoundTripperFactory == nil {
-		c.RoundTripperFactory = defaultRoundTripperFactory
+	if c.roundTripperFactory == nil {
+		c.roundTripperFactory = defaultRoundTripperFactory
 	}
 }
 
@@ -148,7 +132,7 @@ func NewTransport(config TransportConfig) *Transport {
 	return &Transport{
 		config: config,
 		subs:   make([]*subTransport, config.HotConnsPerHost),
-		rand:   config.RandFactory(),
+		rand:   config.randFactory(),
 	}
 }
 
@@ -191,7 +175,7 @@ func (t *Transport) pickSub() *subTransport {
 	t.lock.Lock()
 	defer func() {
 		t.lock.Unlock()
-		sub.Init()
+		sub.InitOnce()
 	}()
 
 	i, n := t.nextSubIndex, len(t.subs)
@@ -288,7 +272,7 @@ type subTransport struct {
 
 	refCount atomic.Int64
 	initOnce sync.Once
-	timer    *clock.Timer
+	timer    *time.Timer
 }
 
 func (t *subTransport) AddRef() { t.refCount.Add(1) }
@@ -302,7 +286,7 @@ func (t *subTransport) RemoveRef() func() {
 
 func (t *subTransport) RefCount() int { return int(t.refCount.Load()) }
 
-func (t *subTransport) Init() { t.initOnce.Do(t.init) }
+func (t *subTransport) InitOnce() { t.initOnce.Do(t.init) }
 
 func (t *subTransport) init() {
 	var (
@@ -366,7 +350,7 @@ func (t *subTransport) init() {
 		protocols = &clone
 	}
 
-	t.RoundTripper = t.Config.RoundTripperFactory(&http.Transport{
+	t.RoundTripper = t.Config.roundTripperFactory(&http.Transport{
 		Proxy:                  t.Config.Proxy,
 		OnProxyConnectResponse: t.Config.OnProxyConnectResponse,
 		DialContext:            t.Config.DialContext,
@@ -394,7 +378,7 @@ func (t *subTransport) init() {
 		Protocols:              protocols,
 	})
 
-	t.timer = t.Config.Clock.AfterFunc(t.MaxAge, func() { t.HandleTimeout(t) })
+	t.timer = time.AfterFunc(t.MaxAge, func() { t.HandleTimeout(t) })
 }
 
 func (t *subTransport) close() {
@@ -406,7 +390,7 @@ func (t *subTransport) close() {
 		v.CloseIdleConnections()
 		// Even if all response bodies are closed, some connections may
 		// be on the way to becoming Idle. Close them later.
-		t.Config.Clock.AfterFunc(1*time.Second, v.CloseIdleConnections)
+		time.AfterFunc(1*time.Second, v.CloseIdleConnections)
 	}
 	t.timer.Stop()
 }

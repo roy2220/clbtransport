@@ -1,5 +1,10 @@
 package clbtransport
 
+import (
+	"math/rand/v2"
+	"net/http"
+)
+
 const DefaultHotConnsPerHost = defaultHotConnsPerHost
 
 type TransportStats struct {
@@ -29,4 +34,14 @@ func (t *Transport) Stats() TransportStats {
 	}
 	stats.NextSubIndex = t.nextSubIndex
 	return stats
+}
+
+func (c *TransportConfig) SetRandFactory(v func() *rand.Rand) *TransportConfig {
+	c.randFactory = v
+	return c
+}
+
+func (c *TransportConfig) SetRoundTripperFactory(v func(*http.Transport) http.RoundTripper) *TransportConfig {
+	c.roundTripperFactory = v
+	return c
 }
