@@ -20,9 +20,9 @@ func Example() {
 	defer server.Close()
 
 	transport := NewTransport(TransportConfig{
-		ApproximateMaxConnAge:       10 * time.Minute, // default
-		ApproximateMaxConnAgeJitter: 0.5,              // default
-		HotConnsPerHost:             3,                // default
+		MaxConnAge:       10 * time.Minute, // default
+		MaxConnAgeJitter: 0.5,              // default
+		HotConnsPerHost:  3,                // default
 
 		// Options below are forwarded to the underlying `http.Transport`:
 		DialContext: (&net.Dialer{

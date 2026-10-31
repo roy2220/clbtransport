@@ -170,9 +170,9 @@ func TestNewTransport(t *testing.T) {
 		var underlyingTransport *http.Transport
 
 		transportConfig := *(&TransportConfig{
-			ApproximateMaxConnAge:       16 * time.Minute,
-			ApproximateMaxConnAgeJitter: 0.8,
-			HotConnsPerHost:             5,
+			MaxConnAge:       16 * time.Minute,
+			MaxConnAgeJitter: 0.8,
+			HotConnsPerHost:  5,
 
 			MaxIdleConns: 6,
 			// MaxIdleConnsPerHost: 2,
@@ -244,9 +244,9 @@ func TestNewTransport(t *testing.T) {
 		var underlyingTransport *http.Transport
 
 		transportConfig := *(&TransportConfig{
-			ApproximateMaxConnAge:       16 * time.Minute,
-			ApproximateMaxConnAgeJitter: 0.8,
-			HotConnsPerHost:             5,
+			MaxConnAge:       16 * time.Minute,
+			MaxConnAgeJitter: 0.8,
+			HotConnsPerHost:  5,
 
 			IdleConnTimeout: time.Hour,
 		}).SetRandFactory(func() *rand.Rand {
@@ -273,9 +273,9 @@ func TestNewTransport(t *testing.T) {
 		var underlyingTransport *http.Transport
 
 		transportConfig := *(&TransportConfig{
-			ApproximateMaxConnAge:       16 * time.Minute,
-			ApproximateMaxConnAgeJitter: 1.0,
-			HotConnsPerHost:             5,
+			MaxConnAge:       16 * time.Minute,
+			MaxConnAgeJitter: 1.0,
+			HotConnsPerHost:  5,
 
 			IdleConnTimeout: time.Hour,
 		}).SetRandFactory(func() *rand.Rand {

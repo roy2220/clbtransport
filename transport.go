@@ -1,4 +1,4 @@
-// Package clbtransport provides a minimalist wrapper around http.Transport
+// Package clbtransport provides a minimalist wrapper around [http.Transport]
 // that implements client-side load balancing.
 package clbtransport
 
@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	defaultApproximateMaxConnAge       = 10 * time.Minute
-	defaultApproximateMaxConnAgeJitter = 0.5
-	defaultHotConnsPerHost             = 3
+	defaultMaxConnAge       = 10 * time.Minute
+	defaultMaxConnAgeJitter = 0.5
+	defaultHotConnsPerHost  = 3
 )
 
 var (
@@ -33,18 +33,19 @@ var (
 
 // TransportConfig configures a Transport.
 type TransportConfig struct {
-	// ApproximateMaxConnAge limits how long a connection may be reused for
-	// new requests. This prevents a long-lived connection from pinning
+	// MaxConnAge approximately limits how long a connection may be reused
+	// for new requests. This prevents a long-lived connection from pinning
 	// traffic to a single backend behind a host. The bound is soft:
 	// in-use connections are allowed to finish. Jitter is applied (see
-	// ApproximateMaxConnAgeJitter). Values <= 0 default to 10 minutes.
-	ApproximateMaxConnAge time.Duration
+	// MaxConnAgeJitter), so the actual age of each connection varies around
+	// this value. Values <= 0 default to 10 minutes.
+	MaxConnAge time.Duration
 
-	// ApproximateMaxConnAgeJitter is the random jitter applied to
-	// ApproximateMaxConnAge, as a fraction in (0.0, 1.0]. The effective age
-	// is drawn uniformly from [(1-jitter)*max, (1+jitter)*max]. Values <= 0
-	// default to 0.5; values > 1 are clamped to 1.
-	ApproximateMaxConnAgeJitter float64
+	// MaxConnAgeJitter is the random jitter applied to MaxConnAge, as a
+	// fraction in (0.0, 1.0]. The effective age of each connection is drawn
+	// uniformly from [(1-jitter)*max, (1+jitter)*max]. Values <= 0 default
+	// to 0.5; values > 1 are clamped to 1.
+	MaxConnAgeJitter float64
 
 	// HotConnsPerHost controls the minimum number of independent
 	// connections that are actively used per host under load, to avoid
@@ -53,7 +54,7 @@ type TransportConfig struct {
 	// connections. Values <= 0 default to 3.
 	HotConnsPerHost int
 
-	// The following options mirror http.Transport; see its docs for
+	// The following options mirror [http.Transport]; see its docs for
 	// details.
 	Proxy                  func(*http.Request) (*url.URL, error)
 	OnProxyConnectResponse func(ctx context.Context, proxyURL *url.URL, connectReq *http.Request, connectRes *http.Response) error
@@ -87,14 +88,14 @@ type TransportConfig struct {
 }
 
 func (c *TransportConfig) applyDefaults() {
-	if c.ApproximateMaxConnAge < 1 {
-		c.ApproximateMaxConnAge = defaultApproximateMaxConnAge
+	if c.MaxConnAge < 1 {
+		c.MaxConnAge = defaultMaxConnAge
 	}
 	switch {
-	case c.ApproximateMaxConnAgeJitter <= 0.0:
-		c.ApproximateMaxConnAgeJitter = defaultApproximateMaxConnAgeJitter
-	case c.ApproximateMaxConnAgeJitter > 1.0:
-		c.ApproximateMaxConnAgeJitter = 1.0
+	case c.MaxConnAgeJitter <= 0.0:
+		c.MaxConnAgeJitter = defaultMaxConnAgeJitter
+	case c.MaxConnAgeJitter > 1.0:
+		c.MaxConnAgeJitter = 1.0
 	}
 	if c.HotConnsPerHost < 1 {
 		c.HotConnsPerHost = defaultHotConnsPerHost
@@ -112,9 +113,10 @@ func (c *TransportConfig) applyDefaults() {
 	}
 }
 
-// Transport implements http.RoundTripper for HTTP, HTTPS, and HTTP proxies
-// (including CONNECT). Unlike http.Transport, it bounds connection reuse age
-// and spreads connections.
+// Transport implements [http.RoundTripper] for HTTP, HTTPS, and HTTP proxies
+// (including CONNECT). Unlike [http.Transport], it bounds connection reuse
+// age (see [TransportConfig.MaxConnAge]) and spreads connections (see
+// [TransportConfig.MaxConnAgeJitter] and [TransportConfig.HotConnsPerHost]).
 type Transport struct {
 	config TransportConfig
 
@@ -136,7 +138,7 @@ func NewTransport(config TransportConfig) *Transport {
 	}
 }
 
-// RoundTrip implements the http.RoundTripper interface.
+// RoundTrip implements the [http.RoundTripper] interface.
 func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	sub := t.pickSub()
 	defer func() {
@@ -218,8 +220,8 @@ func (t *Transport) addSubLocked(i int) *subTransport {
 }
 
 func (t *Transport) calculateMaxSubAgeLocked() time.Duration {
-	factor := 1 + t.config.ApproximateMaxConnAgeJitter*(1-2*t.rand.Float64())
-	return max(time.Duration(float64(t.config.ApproximateMaxConnAge)*factor), 1)
+	factor := 1 + t.config.MaxConnAgeJitter*(1-2*t.rand.Float64())
+	return max(time.Duration(float64(t.config.MaxConnAge)*factor), 1)
 }
 
 func (t *Transport) evictSub(sub *subTransport) {

@@ -64,8 +64,8 @@ import (
 func main() {
     transport := clbtransport.NewTransport(clbtransport.TransportConfig{
         // Retire a connection after roughly 10 minutes of reuse (jittered).
-        ApproximateMaxConnAge:       10 * time.Minute,
-        ApproximateMaxConnAgeJitter: 0.5,
+        MaxConnAge:       10 * time.Minute,
+        MaxConnAgeJitter: 0.5,
         // Keep 3 independent connections per host "hot" at least.
         HotConnsPerHost: 3,
 
@@ -99,8 +99,8 @@ That's it — use `client` exactly as you would with the standard library.
 
 | Field | Default | Description |
 |---|---|---|
-| `ApproximateMaxConnAge` | 10 minutes | Soft upper bound on how long a connection may be reused. In-use connections are allowed to finish. |
-| `ApproximateMaxConnAgeJitter` | 0.5 | Jitter fraction in (0.0, 1.0] applied to `ApproximateMaxConnAge`, where the effective age is drawn uniformly from `[(1-jitter)*max, (1+jitter)*max]`. |
+| `MaxConnAge` | 10 minutes | Soft upper bound on how long a connection may be reused. In-use connections are allowed to finish. |
+| `MaxConnAgeJitter` | 0.5 | Jitter fraction in (0.0, 1.0] applied to `MaxConnAge`, where the effective age is drawn uniformly from `[(1-jitter)*max, (1+jitter)*max]`. |
 | `HotConnsPerHost` | 3 | Minimum number of independent connections actively used per host under load. |
 
 All other fields mirror `http.Transport` and are passed through; see the [Go documentation](https://pkg.go.dev/net/http#Transport) for details.

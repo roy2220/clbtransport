@@ -74,9 +74,9 @@ func TestE2E_HTTP1(t *testing.T) {
 	connCounter := connCounter{T: t}
 
 	transport := NewTransport(TransportConfig{
-		ApproximateMaxConnAge:       3 * time.Second,
-		ApproximateMaxConnAgeJitter: 0.5,
-		HotConnsPerHost:             3,
+		MaxConnAge:       3 * time.Second,
+		MaxConnAgeJitter: 0.5,
+		HotConnsPerHost:  3,
 
 		DialContext:         connCounter.DialContext,
 		MaxIdleConnsPerHost: 100,
@@ -138,9 +138,9 @@ func TestE2E_HTTP2(t *testing.T) {
 	connCounter := connCounter{T: t}
 
 	transport := NewTransport(TransportConfig{
-		ApproximateMaxConnAge:       3 * time.Second,
-		ApproximateMaxConnAgeJitter: 0.5,
-		HotConnsPerHost:             3,
+		MaxConnAge:       3 * time.Second,
+		MaxConnAgeJitter: 0.5,
+		HotConnsPerHost:  3,
 
 		Protocols:           &protocols,
 		DialContext:         connCounter.DialContext,
