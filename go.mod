@@ -1,6 +1,6 @@
 module github.com/roy2220/clbtransport
 
-go 1.26
+go 1.25
 
 require github.com/stretchr/testify v1.12.1
 
