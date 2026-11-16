@@ -120,7 +120,7 @@ func (c *TransportConfig) applyDefaults() {
 type Transport struct {
 	config TransportConfig
 
-	lock         sync.Mutex
+	mu           sync.Mutex
 	subs         []*subTransport
 	nextSubIndex int
 	rand         *rand.Rand
@@ -174,9 +174,9 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 
 func (t *Transport) pickSub() *subTransport {
 	var sub *subTransport
-	t.lock.Lock()
+	t.mu.Lock()
 	defer func() {
-		t.lock.Unlock()
+		t.mu.Unlock()
 		sub.InitOnce()
 	}()
 
@@ -226,9 +226,9 @@ func (t *Transport) calculateMaxSubAgeLocked() time.Duration {
 
 func (t *Transport) evictSub(sub *subTransport) {
 	var cleanup func()
-	t.lock.Lock()
+	t.mu.Lock()
 	defer func() {
-		t.lock.Unlock()
+		t.mu.Unlock()
 		if cleanup != nil {
 			cleanup()
 		}
@@ -245,9 +245,9 @@ func (t *Transport) evictSub(sub *subTransport) {
 // interrupt connections currently in use.
 func (t *Transport) CloseIdleConnections() {
 	var cleanups []func()
-	t.lock.Lock()
+	t.mu.Lock()
 	defer func() {
-		t.lock.Unlock()
+		t.mu.Unlock()
 		for _, cleanup := range cleanups {
 			cleanup()
 		}

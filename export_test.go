@@ -18,8 +18,8 @@ type SubTransportStats struct {
 }
 
 func (t *Transport) Stats() TransportStats {
-	t.lock.Lock()
-	defer t.lock.Unlock()
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	var stats TransportStats
 	stats.Subs = make([]*SubTransportStats, len(t.subs))
